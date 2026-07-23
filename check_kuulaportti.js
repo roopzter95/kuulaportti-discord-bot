@@ -22,6 +22,7 @@ function loadSeenIds() {
     const data = JSON.parse(raw);
     return new Set(data.seen_ids || []);
   } catch (err) {
+    // Tiedostoa ei vielä ole tai se on tyhjä -> aloitetaan tyhjästä setistä.
     return new Set();
   }
 }
@@ -35,24 +36,32 @@ function formatEventTime(startUnix, endUnix) {
   const alku = new Date(startUnix * 1000);
   const loppu = new Date(endUnix * 1000);
 
-  const dateFmt = new Intl.DateTimeFormat('fi-FI', {
-    timeZone: 'Europe/Helsinki',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  });
-  const timeFmt = new Intl.DateTimeFormat('fi-FI', {
-    timeZone: 'Europe/Helsinki',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  // Haetaan osat erikseen Suomen aikavyöhykkeellä (Intl hoitaa kesä-/talviajan automaattisesti).
+  const parts = (d) => {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Helsinki',
+      day: 'numeric',
+      month: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const get = (type) => fmt.find((p) => p.type === type).value;
+    return {
+      pvm: `${Number(get('day'))}.${Number(get('month'))}.${get('year')}`,
+      aika: `${get('hour')}:${get('minute')}`,
+    };
+  };
 
-  const alkuPvm = dateFmt.format(alku);
-  const alkuAika = timeFmt.format(alku);
-  const loppuAika = timeFmt.format(loppu);
+  const a = parts(alku);
+  const l = parts(loppu);
 
-  return `${alkuPvm} klo ${alkuAika} - ${loppuAika}`;
+  // Jos peli jatkuu seuraavalle päivälle, näytetään loppupäivämäärä myös.
+  if (a.pvm === l.pvm) {
+    return `${a.pvm} klo ${a.aika} - ${l.aika}`;
+  }
+  return `${a.pvm} klo ${a.aika} - ${l.pvm} klo ${l.aika}`;
 }
 
 async function sendDiscordMessage(event) {
@@ -74,7 +83,7 @@ async function sendDiscordMessage(event) {
     content: '@everyone 📢 Uusi peli-ilmoitus Kuulaportissa!',
     embeds: [embed],
     allowed_mentions: {
-      parse: ['everyone'],
+      parse: ['everyone'], // Varmistaa, että @everyone oikeasti tägää eikä näy pelkkänä tekstinä.
     },
   };
 
@@ -111,13 +120,28 @@ async function main() {
 
   console.log(`Löytyi ${newEvents.length} uutta tapahtumaa. Lähetetään Discordiin...`);
 
+  let virhe = null;
+
   for (const event of newEvents) {
-    await sendDiscordMessage(event);
-    seenIds.add(String(event.id));
-    console.log(`Lähetetty: ${event.name} (id: ${event.id})`);
+    try {
+      await sendDiscordMessage(event);
+      seenIds.add(String(event.id));
+      console.log(`Lähetetty: ${event.name} (id: ${event.id})`);
+      // Pieni viive, jottei Discordin webhook-rajoitus (rate limit) laukea usealla viestillä.
+      await new Promise((r) => setTimeout(r, 1200));
+    } catch (err) {
+      // Tallennetaan tähän mennessä onnistuneet, jottei niitä lähetetä uudelleen.
+      virhe = err;
+      break;
+    }
   }
 
   saveSeenIds(seenIds);
+
+  if (virhe) {
+    throw virhe;
+  }
+
   console.log('Valmis.');
 }
 
