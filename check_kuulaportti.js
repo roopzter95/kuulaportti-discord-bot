@@ -22,7 +22,6 @@ function loadSeenIds() {
     const data = JSON.parse(raw);
     return new Set(data.seen_ids || []);
   } catch (err) {
-    // Tiedostoa ei vielä ole tai se on tyhjä -> aloitetaan tyhjästä setistä.
     return new Set();
   }
 }
@@ -36,10 +35,6 @@ function formatEventTime(startUnix, endUnix) {
   const alku = new Date(startUnix * 1000);
   const loppu = new Date(endUnix * 1000);
 
-  const pad = (n) => String(n).padStart(2, '0');
-
-  // Käytetään UTC-arvoja + kiinteää Suomen ajan offsettia (UTC+2 talvi / UTC+3 kesä).
-  // Yksinkertaisuuden vuoksi käytetään Intl-apuria oikean Helsinki-ajan saamiseksi.
   const dateFmt = new Intl.DateTimeFormat('fi-FI', {
     timeZone: 'Europe/Helsinki',
     day: '2-digit',
@@ -76,8 +71,11 @@ async function sendDiscordMessage(event) {
   };
 
   const payload = {
-    content: '📢 Uusi peli-ilmoitus Kuulaportissa!',
+    content: '@everyone 📢 Uusi peli-ilmoitus Kuulaportissa!',
     embeds: [embed],
+    allowed_mentions: {
+      parse: ['everyone'],
+    },
   };
 
   const res = await fetch(WEBHOOK_URL, {
