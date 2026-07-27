@@ -2,8 +2,9 @@ name: Kuulaportti -> Discord ilmoitus
 
 on:
   schedule:
-    # Ajetaan joka tunti (UTC-aika). Muuta tarvittaessa.
-    - cron: '0 * * * *'
+    # Ajetaan 15 minuutin välein. Näin uusi ilmoitus tavoittaa Discordin
+    # käytännössä aina alle tunnissa, vaikka GitHub viivästyttäisi yksittäistä ajoa.
+    - cron: '*/15 * * * *'
   workflow_dispatch: {}  # Mahdollistaa manuaalisen ajon "Run workflow" -napista
 
 permissions:
