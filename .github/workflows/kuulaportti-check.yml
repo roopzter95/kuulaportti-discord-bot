@@ -10,6 +10,12 @@ on:
 permissions:
   contents: write  # Tarvitaan, jotta workflow voi committaa päivittyneen seen_events.json:n
 
+# Estää kahta ajoa pyörimästä yhtä aikaa. Jos uusi ajo alkaa vanhan ollessa kesken,
+# se odottaa edellisen valmistumista -> ei tuplailmoituksia päällekkäisistä ajoista.
+concurrency:
+  group: kuulaportti-check
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -32,5 +38,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add seen_events.json
-          git diff --quiet --cached || git commit -m "Päivitetään nähdyt tapahtumat"
-          git push
+          if git diff --quiet --cached; then
+            echo "Ei muutoksia committoitavaksi."
+          else
+            git commit -m "Päivitetään nähdyt tapahtumat"
+            # Haetaan mahdolliset toisen ajon tekemät muutokset ennen pushia.
+            git pull --rebase origin main
+            git push
+          fi
