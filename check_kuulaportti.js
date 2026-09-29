@@ -1,28 +1,32 @@
 // Kuulaportti -> Discord ilmoitusskripti
 // Perustuu TenguKnightin alkuperäiseen AirsoftJSON_parse.js -koodiin (Kuulaportin JSON-rajapinnan käyttö).
-// Hakee tiimin tulevat pelit Kuulaportista ja lähettää uudet tapahtumat Discord-webhookiin.
+// Hakee tiimin pelit Kuulaportin virallisesta rajapinnasta (team_events.php)
+// ja lähettää uudet julkaistut pelit Discord-webhookiin.
 
 const fs = require('fs');
 const path = require('path');
 
-const TEAM_ID = 213;
-const JSON_URL = `https://kuulaportti.fi/ajax.php?request=events&type=team&id=${TEAM_ID}&subtype=upcoming`;
+const JSON_URL = 'https://kuulaportti.fi/api/v1/team_events.php';
 const SEEN_FILE = path.join(__dirname, 'seen_events.json');
 
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const API_KEY = process.env.KUULAPORTTI_API_KEY;
 
 if (!WEBHOOK_URL) {
-  console.error('DISCORD_WEBHOOK_URL puuttuu ympäristömuuttujista (GitHub Secrets).');
+  console.error('DISCORD_WEBHOOK_URL puuttuu (GitHub Secrets).');
+  process.exit(1);
+}
+if (!API_KEY) {
+  console.error('KUULAPORTTI_API_KEY puuttuu (GitHub Secrets).');
   process.exit(1);
 }
 
 function loadSeenIds() {
   try {
-    const raw = fs.readFileSync(SEEN_FILE, 'utf8');
-    const data = JSON.parse(raw);
-    return new Set(data.seen_ids || []);
+    const data = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8'));
+    return new Set((data.seen_ids || []).map(String));
   } catch (err) {
-    // Tiedostoa ei vielä ole tai se on tyhjä -> aloitetaan tyhjästä setistä.
+    // Tiedostoa ei vielä ole tai se on tyhjä -> aloitetaan tyhjästä.
     return new Set();
   }
 }
@@ -33,12 +37,9 @@ function saveSeenIds(seenSet) {
 }
 
 function formatEventTime(startUnix, endUnix) {
-  const alku = new Date(startUnix * 1000);
-  const loppu = new Date(endUnix * 1000);
-
-  // Haetaan osat erikseen Suomen aikavyöhykkeellä (Intl hoitaa kesä-/talviajan automaattisesti).
-  const parts = (d) => {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
+  // Haetaan osat Suomen aikavyöhykkeellä (Intl hoitaa kesä-/talviajan automaattisesti).
+  const parts = (unix) => {
+    const p = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Helsinki',
       day: 'numeric',
       month: 'numeric',
@@ -46,36 +47,47 @@ function formatEventTime(startUnix, endUnix) {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
-    }).formatToParts(d);
-    const get = (type) => fmt.find((p) => p.type === type).value;
+    }).formatToParts(new Date(unix * 1000));
+    const get = (type) => p.find((x) => x.type === type).value;
     return {
       pvm: `${Number(get('day'))}.${Number(get('month'))}.${get('year')}`,
       aika: `${get('hour')}:${get('minute')}`,
     };
   };
 
-  const a = parts(alku);
-  const l = parts(loppu);
-
-  // Jos peli jatkuu seuraavalle päivälle, näytetään loppupäivämäärä myös.
+  const a = parts(startUnix);
+  const l = parts(endUnix);
   if (a.pvm === l.pvm) {
     return `${a.pvm} klo ${a.aika} - ${l.aika}`;
   }
   return `${a.pvm} klo ${a.aika} - ${l.pvm} klo ${l.aika}`;
 }
 
+// Ilmoitetaan vain julkaistut, tulevat ja peruuttamattomat pelit.
+// published_at = 0 tarkoittaa julkaisematonta luonnosta, ja tulevaisuudessa
+// oleva published_at ajastettua julkaisua, jota ei vielä ilmoiteta.
+function isAnnounceable(event, nowUnix) {
+  return (
+    event.status === 'upcoming' &&
+    !event.cancelled &&
+    Number(event.published_at) > 0 &&
+    Number(event.published_at) <= nowUnix
+  );
+}
+
 async function sendDiscordMessage(event) {
-  const eventUrl = `https://kuulaportti.fi/?page=event&id=${event.id}`;
-  const aikaTeksti = formatEventTime(event.event_start, event.event_end);
+  const eventUrl = String(event.url || '').startsWith('https://kuulaportti.fi/')
+    ? event.url
+    : `https://kuulaportti.fi/?page=event&id=${event.id}`;
 
   const embed = {
-    title: event.name,
+    title: String(event.name || 'Peli').trim(),
     url: eventUrl,
     color: 0x2ecc71,
     fields: [
-      { name: 'Pelipaikka', value: event.location_name || 'Ei tiedossa', inline: true },
-      { name: 'Osoite', value: event.address || 'Ei tiedossa', inline: true },
-      { name: 'Aika', value: aikaTeksti, inline: false },
+      { name: 'Pelipaikka', value: event.location?.name || 'Ei tiedossa', inline: true },
+      { name: 'Osoite', value: event.location?.address || 'Ei tiedossa', inline: true },
+      { name: 'Aika', value: formatEventTime(event.event_start, event.event_end), inline: false },
     ],
   };
 
@@ -102,16 +114,23 @@ async function sendDiscordMessage(event) {
 async function main() {
   console.log(`Haetaan tapahtumat: ${JSON_URL}`);
 
-  const response = await fetch(JSON_URL);
-  if (!response.ok) {
-    throw new Error(`Kuulaportin haku epäonnistui: ${response.status} ${response.statusText}`);
+  const response = await fetch(JSON_URL, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const json = await response.json().catch(() => null);
+
+  if (!response.ok || !json || json.error) {
+    const syy = (json && (json.message || json.error)) || response.statusText;
+    throw new Error(`Kuulaportin haku epäonnistui (${response.status}): ${syy}`);
   }
 
-  const json = await response.json();
-  const events = json.data || [];
-
+  const nowUnix = Math.floor(Date.now() / 1000);
   const seenIds = loadSeenIds();
-  const newEvents = events.filter((e) => !seenIds.has(String(e.id)));
+
+  const newEvents = (json.data || [])
+    .filter((e) => isAnnounceable(e, nowUnix))
+    .filter((e) => !seenIds.has(String(e.id)))
+    .sort((a, b) => a.event_start - b.event_start);
 
   if (newEvents.length === 0) {
     console.log('Ei uusia tapahtumia.');
@@ -146,6 +165,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Virhe:', err);
+  console.error('Virhe:', err.message || err);
   process.exit(1);
 });
