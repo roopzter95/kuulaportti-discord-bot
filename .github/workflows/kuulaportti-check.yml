@@ -1,17 +1,16 @@
 name: Kuulaportti -> Discord ilmoitus
 
 on:
+  # Pääasiallinen käynnistys tulee ulkoiselta ajastimelta (cron-job.org) workflow_dispatchin kautta.
+  workflow_dispatch: {}
   schedule:
-    # Ajetaan 15 minuutin välein. Näin uusi ilmoitus tavoittaa Discordin
-    # käytännössä aina alle tunnissa, vaikka GitHub viivästyttäisi yksittäistä ajoa.
-    - cron: '*/15 * * * *'
-  workflow_dispatch: {}  # Mahdollistaa manuaalisen ajon "Run workflow" -napista
+    # Varajärjestelmä kerran tunnissa, jos ulkoinen ajastin on joskus pois toiminnasta.
+    - cron: '23 * * * *'
 
 permissions:
   contents: write  # Tarvitaan, jotta workflow voi committaa päivittyneen seen_events.json:n
 
-# Estää kahta ajoa pyörimästä yhtä aikaa. Jos uusi ajo alkaa vanhan ollessa kesken,
-# se odottaa edellisen valmistumista -> ei tuplailmoituksia päällekkäisistä ajoista.
+# Estää kahta ajoa pyörimästä yhtä aikaa -> ei tuplailmoituksia päällekkäisistä ajoista.
 concurrency:
   group: kuulaportti-check
   cancel-in-progress: false
@@ -19,6 +18,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -31,6 +31,7 @@ jobs:
       - name: Run check script
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          KUULAPORTTI_API_KEY: ${{ secrets.KUULAPORTTI_API_KEY }}
         run: node check_kuulaportti.js
 
       - name: Commit updated seen_events.json
